@@ -20,6 +20,49 @@ self.addEventListener("activate", (e) => {
   );
 });
 
+// Push event — show notification when the streak reminder fires.
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = { title: "Abide", body: event.data ? event.data.text() : "" };
+  }
+  const title = data.title || "Your streak needs you";
+  const body = data.body || "Open Abide and read one chapter.";
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      icon: "/mikesbibleapp/icon-192.png",
+      badge: "/mikesbibleapp/icon-192.png",
+      tag: "streak-reminder",
+      renotify: true,
+      data,
+    }),
+  );
+});
+
+// Open the app when a notification is tapped (lands on the home screen).
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    (async () => {
+      const allClients = await self.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+      for (const client of allClients) {
+        if (client.url.includes("mikesbibleapp") && "focus" in client) {
+          return client.focus();
+        }
+      }
+      if (self.clients.openWindow) {
+        return self.clients.openWindow("/mikesbibleapp/");
+      }
+    })(),
+  );
+});
+
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
