@@ -33,8 +33,8 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(title, {
       body,
-      icon: "/mikesbibleapp/icon-192.png",
-      badge: "/mikesbibleapp/icon-192.png",
+      icon: "/honeycombbibleapp/icon-192.png",
+      badge: "/honeycombbibleapp/icon-192.png",
       tag: "streak-reminder",
       renotify: true,
       data,
@@ -57,7 +57,7 @@ self.addEventListener("notificationclick", (event) => {
         }
       }
       if (self.clients.openWindow) {
-        return self.clients.openWindow("/mikesbibleapp/");
+        return self.clients.openWindow("/honeycombbibleapp/");
       }
     })(),
   );
