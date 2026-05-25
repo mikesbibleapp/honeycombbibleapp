@@ -442,7 +442,7 @@ begin
 
   insert into public.family_weekly_pots(room_id, week_start)
   values (v_room_id, v_week_start)
-  on conflict (room_id, week_start) do nothing;
+  on conflict on constraint family_weekly_pots_pkey do nothing;
 
   insert into public.family_weekly_activity(room_id, week_start, user_id, event_type, honey_delta, chapters_delta, source_key, note)
   values (v_room_id, v_week_start, auth.uid(), left(coalesce(p_event_type, 'activity'), 50), v_honey, v_chapters, p_source_key, left(coalesce(p_note, ''), 180))
@@ -450,17 +450,17 @@ begin
   returning id into v_id;
 
   if v_id is not null then
-    update public.family_weekly_pots
-    set pot_honey = pot_honey + v_honey,
+    update public.family_weekly_pots fwp
+    set pot_honey = fwp.pot_honey + v_honey,
         updated_at = now()
-    where room_id = v_room_id
-      and week_start = v_week_start
-    returning family_weekly_pots.pot_honey into v_pot;
+    where fwp.room_id = v_room_id
+      and fwp.week_start = v_week_start
+    returning fwp.pot_honey into v_pot;
   else
-    select family_weekly_pots.pot_honey into v_pot
-    from public.family_weekly_pots
-    where room_id = v_room_id
-      and week_start = v_week_start;
+    select fwp.pot_honey into v_pot
+    from public.family_weekly_pots fwp
+    where fwp.room_id = v_room_id
+      and fwp.week_start = v_week_start;
   end if;
 
   return query select (v_id is not null), coalesce(v_pot, 0);
@@ -645,6 +645,41 @@ begin
   return query select g.id, v_winner, v_payout, v_challenger_chapters, v_target_chapters;
 end;
 $$;
+
+create or replace function public.prevent_user_progress_regression()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if tg_op = 'UPDATE' then
+    if new.total_chapters < old.total_chapters then
+      raise exception 'refusing to reduce total_chapters from % to %', old.total_chapters, new.total_chapters;
+    end if;
+
+    if new.books_finished_count < old.books_finished_count then
+      raise exception 'refusing to reduce books_finished_count from % to %', old.books_finished_count, new.books_finished_count;
+    end if;
+
+    if new.best_streak < old.best_streak then
+      new.best_streak := old.best_streak;
+    end if;
+  end if;
+
+  new.state := jsonb_set(coalesce(new.state, '{}'::jsonb), '{totalChapters}', to_jsonb(new.total_chapters), true);
+  new.state := jsonb_set(new.state, '{booksFinishedCount}', to_jsonb(new.books_finished_count), true);
+  new.state := jsonb_set(new.state, '{bestStreak}', to_jsonb(new.best_streak), true);
+
+  return new;
+end;
+$$;
+
+drop trigger if exists user_progress_no_regression on public.user_progress;
+create trigger user_progress_no_regression
+before update on public.user_progress
+for each row
+execute function public.prevent_user_progress_regression();
 
 grant execute on function public.current_family_week_start() to authenticated;
 grant execute on function public.current_family_room_id() to authenticated;
