@@ -403,7 +403,7 @@ begin
 	    order by a.created_at desc, a.award_key
 	  ),
 	  mission_rows as (
-	    select *
+	    select m.*
 	    from (
 	      values
         (
@@ -490,6 +490,19 @@ begin
 	          450
 	        )
 	    ) as m(mission_key, title, body, progress_value, target_value, reward_honey)
+	    where m.mission_key in (
+	      case (extract(doy from v_race_date)::integer % 3)
+	        when 0 then 'everyone-read'
+	        when 1 then 'beat-yesterday'
+	        else 'help-lowest'
+	      end,
+	      case (extract(doy from v_race_date)::integer % 3)
+	        when 0 then 'comeback-day'
+	        when 1 then 'comeback-double'
+	        else 'close-gap'
+	      end,
+	      'family-ten'
+	    )
 	  )
   select
     r.id,
@@ -1019,8 +1032,9 @@ declare
 	  v_leader_id uuid;
   v_claimed integer := 0;
   v_reward integer := 0;
-  v_pot integer := 0;
-  mission record;
+	  v_pot integer := 0;
+	  v_claim_key text;
+	  mission record;
 begin
   if auth.uid() is null then
     raise exception 'not signed in';
@@ -1081,24 +1095,40 @@ begin
 	    (select coalesce(max(today_chapters), 0)::integer from activity where user_id <> (select user_id from leader))
 	  into v_everyone_progress, v_family_today, v_comeback_progress, v_leader_id, v_lowest_progress, v_behind_max;
 
-  for mission in
-    select * from (
-      values
-	        ('everyone-read'::text, v_everyone_progress, greatest(1, v_member_count), 300),
-	        ('beat-yesterday'::text, v_family_today, v_yesterday_target, 450),
+	  for mission in
+	    select m.*
+	    from (
+	      values
+		        ('everyone-read'::text, v_everyone_progress, greatest(1, v_member_count), 300),
+		        ('beat-yesterday'::text, v_family_today, v_yesterday_target, 450),
 	        ('help-lowest'::text, v_lowest_progress, 1, 350),
 	        ('family-ten'::text, v_family_today, 10, 500),
-	        ('comeback-day'::text, v_comeback_progress, 2, 400),
-	        ('comeback-double'::text, v_behind_max, 2, 350),
-	        ('close-gap'::text, v_behind_max, 3, 450)
-	    ) as m(mission_key, progress_value, target_value, reward_honey)
-  loop
-    if mission.progress_value >= mission.target_value then
-      insert into public.family_mission_claims(room_id, mission_date, mission_key, claimed_by, reward_honey)
-      values (v_room_id, v_race_date, mission.mission_key, auth.uid(), mission.reward_honey)
-      on conflict (room_id, mission_date, mission_key) do nothing;
+		        ('comeback-day'::text, v_comeback_progress, 2, 400),
+		        ('comeback-double'::text, v_behind_max, 2, 350),
+		        ('close-gap'::text, v_behind_max, 3, 450)
+		    ) as m(mission_key, progress_value, target_value, reward_honey)
+	    where m.mission_key in (
+	      case (extract(doy from v_race_date)::integer % 3)
+	        when 0 then 'everyone-read'
+	        when 1 then 'beat-yesterday'
+	        else 'help-lowest'
+	      end,
+	      case (extract(doy from v_race_date)::integer % 3)
+	        when 0 then 'comeback-day'
+	        when 1 then 'comeback-double'
+	        else 'close-gap'
+	      end,
+	      'family-ten'
+	    )
+	  loop
+	    if mission.progress_value >= mission.target_value then
+	      v_claim_key := null;
+	      insert into public.family_mission_claims(room_id, mission_date, mission_key, claimed_by, reward_honey)
+	      values (v_room_id, v_race_date, mission.mission_key, auth.uid(), mission.reward_honey)
+	      on conflict (room_id, mission_date, mission_key) do nothing
+	      returning mission_key into v_claim_key;
 
-      if found then
+	      if v_claim_key is not null then
         v_claimed := v_claimed + 1;
         v_reward := v_reward + mission.reward_honey;
 
