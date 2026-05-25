@@ -17,6 +17,9 @@ existing Supabase/local progress contract.
   outfits, mounts/vehicles, trails, regions, current asset references, and an
   asset production backlog. It has no DOM side effects and can be imported by
   tests, build tooling, or future UI slices.
+- `premium-app-contracts.js` is data-only: screen contracts, theme contracts,
+  and premium economy categories/loops for Bible Trail, Family Cup, Reader,
+  Rewards, Shop, Highlights, and Settings.
 
 Guardrails:
 - Do not rewrite Bible progress, completed chapters, streaks, honey, family room

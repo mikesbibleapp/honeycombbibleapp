@@ -1,6 +1,19 @@
 export const HONEYCOMB_ADVENTURE_SHELL_VERSION = "2026.05.25-premium-adventure-v1";
 
 export {
+  PREMIUM_APP_CONTRACTS_VERSION,
+  PREMIUM_ECONOMY_CATEGORIES,
+  PREMIUM_ECONOMY_LOOPS,
+  PREMIUM_SCREEN_CONTRACTS,
+  PREMIUM_THEME_CONTRACTS,
+  getPremiumEconomyCategory,
+  getPremiumScreenContract,
+  getPremiumThemeContract,
+  listPremiumEconomyLoopsForScreen,
+  listPremiumScreensByEconomyCategory,
+} from "./premium-app-contracts.js";
+
+export {
   ADVENTURE_ART_DIRECTION,
   ADVENTURE_ASSET_ROOT,
   ADVENTURE_WORLD_REGIONS,
