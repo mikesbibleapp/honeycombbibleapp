@@ -113,6 +113,17 @@ create table if not exists public.family_mission_claims (
   primary key (room_id, mission_date, mission_key)
 );
 
+create table if not exists public.family_weekly_awards (
+  room_id uuid not null references public.family_rooms(id) on delete cascade,
+  week_start date not null,
+  award_key text not null,
+  winner_id uuid references auth.users(id) on delete set null,
+  title text not null,
+  metric_value integer not null default 0,
+  created_at timestamptz not null default now(),
+  primary key (room_id, week_start, award_key)
+);
+
 alter table public.family_rooms enable row level security;
 alter table public.family_room_members enable row level security;
 alter table public.family_weekly_pots enable row level security;
@@ -121,6 +132,7 @@ alter table public.family_goals enable row level security;
 alter table public.family_daily_races enable row level security;
 alter table public.family_race_events enable row level security;
 alter table public.family_mission_claims enable row level security;
+alter table public.family_weekly_awards enable row level security;
 
 drop policy if exists family_rooms_read_member on public.family_rooms;
 create policy family_rooms_read_member on public.family_rooms
@@ -218,6 +230,18 @@ create policy family_mission_claims_read_member on public.family_mission_claims
     )
   );
 
+drop policy if exists family_weekly_awards_read_member on public.family_weekly_awards;
+create policy family_weekly_awards_read_member on public.family_weekly_awards
+  for select to authenticated
+  using (
+    exists (
+      select 1 from public.family_room_members mine
+      where mine.room_id = family_weekly_awards.room_id
+        and mine.user_id = auth.uid()
+        and mine.active
+    )
+  );
+
 create or replace function public.current_family_week_start()
 returns date
 language sql
@@ -265,7 +289,8 @@ returns table (
   race_leader_name text,
   race_leader_points integer,
   race_members jsonb,
-  missions jsonb
+  missions jsonb,
+  awards jsonb
 )
 language plpgsql
 security definer
@@ -339,7 +364,7 @@ begin
       )::integer as race_rank
     from race_stats rs
   ),
-  goal_rows as (
+	  goal_rows as (
     select
       g.id,
       g.title,
@@ -360,25 +385,69 @@ begin
     where g.room_id = v_room_id
       and g.week_start = v_week_start
       and g.status = 'active'
-    order by g.created_at desc
-    limit 10
-  ),
-  mission_rows as (
-    select *
-    from (
-      values
+	    order by g.created_at desc
+	    limit 10
+	  ),
+	  award_rows as (
+	    select
+	      a.award_key,
+	      a.title,
+	      a.winner_id,
+	      coalesce(p.display_name, 'Reader') as winner_name,
+	      a.metric_value,
+	      a.created_at
+	    from public.family_weekly_awards a
+	    left join public.profiles p on p.id = a.winner_id
+	    where a.room_id = v_room_id
+	      and a.week_start = v_week_start
+	    order by a.created_at desc, a.award_key
+	  ),
+	  mission_rows as (
+	    select *
+	    from (
+	      values
         (
           'everyone-read',
           'Everyone reads today',
           'Every family member reads at least one chapter today.',
           (select count(*)::integer from race_stats where today_chapters > 0),
-          greatest(1, (select count(*)::integer from race_stats)),
-          300
-        ),
-        (
-          'family-ten',
-          '10 chapter family sprint',
-          'Read 10 total chapters as a family today.',
+	          greatest(1, (select count(*)::integer from race_stats)),
+	          300
+	        ),
+	        (
+	          'beat-yesterday',
+	          'Beat yesterday',
+	          'Top yesterday''s family chapter total before bedtime.',
+	          (select coalesce(sum(today_chapters), 0)::integer from race_stats),
+	          greatest(
+	            1,
+	            (
+	              select coalesce(sum(a.chapters_delta), 0)::integer + 1
+	              from public.family_weekly_activity a
+	              where a.room_id = v_room_id
+	                and a.week_start = v_week_start
+	                and a.created_at::date = (v_race_date - 1)
+	            )
+	          ),
+	          450
+	        ),
+	        (
+	          'help-lowest',
+	          'Help the lowest reader',
+	          'The reader with the lowest weekly total gets one chapter today.',
+	          (
+	            select case when coalesce(rs.today_chapters, 0) > 0 then 1 else 0 end
+	            from race_stats rs
+	            order by rs.week_chapters asc, rs.total_chapters asc, rs.display_name asc
+	            limit 1
+	          ),
+	          1,
+	          350
+	        ),
+	        (
+	          'family-ten',
+	          '10 chapter family sprint',
+	          'Read 10 total chapters as a family today.',
           (select coalesce(sum(today_chapters), 0)::integer from race_stats),
           10,
           500
@@ -394,10 +463,34 @@ begin
               and user_id <> (select user_id from ranked where family_rank = 1 limit 1)
           ),
           2,
-          400
-        )
-    ) as m(mission_key, title, body, progress_value, target_value, reward_honey)
-  )
+	          400
+	        ),
+	        (
+	          'comeback-double',
+	          '2x comeback boost',
+	          'A reader behind the leader reads 2 chapters today.',
+	          (
+	            select coalesce(max(today_chapters), 0)::integer
+	            from race_stats
+	            where user_id <> (select user_id from ranked where family_rank = 1 limit 1)
+	          ),
+	          2,
+	          350
+	        ),
+	        (
+	          'close-gap',
+	          'Close the gap',
+	          'Someone chasing the leader closes the family gap with 3 chapters today.',
+	          (
+	            select coalesce(max(today_chapters), 0)::integer
+	            from race_stats
+	            where user_id <> (select user_id from ranked where family_rank = 1 limit 1)
+	          ),
+	          3,
+	          450
+	        )
+	    ) as m(mission_key, title, body, progress_value, target_value, reward_honey)
+	  )
   select
     r.id,
     r.name,
@@ -412,9 +505,9 @@ begin
     coalesce(me.family_rank, 0),
     coalesce(leader.display_name, 'Reader'),
     coalesce(leader.week_chapters, 0),
-    coalesce(
-      (
-        select jsonb_agg(
+	    coalesce(
+	      (
+	        select jsonb_agg(
           jsonb_build_object(
             'user_id', rk.user_id,
             'display_name', rk.display_name,
@@ -481,10 +574,17 @@ begin
           on mc.room_id = v_room_id
          and mc.mission_date = v_race_date
          and mc.mission_key = mr.mission_key
-      ),
-      '[]'::jsonb
-    )
-  from public.family_rooms r
+	      ),
+	      '[]'::jsonb
+	    ),
+	    coalesce(
+	      (
+	        select jsonb_agg(to_jsonb(award_rows) order by award_rows.created_at desc, award_rows.award_key)
+	        from award_rows
+	      ),
+	      '[]'::jsonb
+	    )
+	  from public.family_rooms r
   join public.family_room_members mine
     on mine.room_id = r.id
    and mine.user_id = auth.uid()
@@ -527,7 +627,8 @@ returns table (
   race_leader_name text,
   race_leader_points integer,
   race_members jsonb,
-  missions jsonb
+  missions jsonb,
+  awards jsonb
 )
 language plpgsql
 security definer
@@ -594,7 +695,8 @@ returns table (
   race_leader_name text,
   race_leader_points integer,
   race_members jsonb,
-  missions jsonb
+  missions jsonb,
+  awards jsonb
 )
 language plpgsql
 security definer
@@ -678,12 +780,13 @@ begin
   returning id into v_id;
 
   if v_id is not null then
-    v_race_points := case
-      when coalesce(p_event_type, '') = 'chapter_read' then (v_chapters * 100) + least(50, v_honey)
-      when coalesce(p_event_type, '') = 'comeback_bonus' then 60
-      when coalesce(p_event_type, '') = 'sunday_strong' then 150
-      else 0
-    end;
+	    v_race_points := case
+	      when coalesce(p_event_type, '') = 'chapter_read' then (v_chapters * 100) + least(50, v_honey)
+	      when coalesce(p_event_type, '') = 'double_next_bonus' then 120
+	      when coalesce(p_event_type, '') = 'comeback_bonus' then 60
+	      when coalesce(p_event_type, '') = 'sunday_strong' then 150
+	      else 0
+	    end;
 
     if v_race_points <> 0 then
       insert into public.family_race_events(room_id, race_date, user_id, actor_id, event_type, points_delta, source_key, note)
@@ -906,11 +1009,14 @@ declare
   v_room_id uuid;
   v_week_start date := public.current_family_week_start();
   v_race_date date := current_date;
-  v_member_count integer := 0;
-  v_everyone_progress integer := 0;
-  v_family_today integer := 0;
-  v_comeback_progress integer := 0;
-  v_leader_id uuid;
+	  v_member_count integer := 0;
+	  v_everyone_progress integer := 0;
+	  v_family_today integer := 0;
+	  v_comeback_progress integer := 0;
+	  v_yesterday_target integer := 1;
+	  v_lowest_progress integer := 0;
+	  v_behind_max integer := 0;
+	  v_leader_id uuid;
   v_claimed integer := 0;
   v_reward integer := 0;
   v_pot integer := 0;
@@ -934,37 +1040,58 @@ begin
   where room_id = v_room_id
     and active;
 
-  with activity as (
-    select m.user_id, coalesce(sum(a.chapters_delta) filter (where a.created_at::date = v_race_date), 0)::integer as today_chapters
-    from public.family_room_members m
-    left join public.family_weekly_activity a
-      on a.room_id = m.room_id
-     and a.user_id = m.user_id
-     and a.week_start = v_week_start
+	  select greatest(1, coalesce(sum(a.chapters_delta), 0)::integer + 1) into v_yesterday_target
+	  from public.family_weekly_activity a
+	  where a.room_id = v_room_id
+	    and a.week_start = v_week_start
+	    and a.created_at::date = (v_race_date - 1);
+
+	  with activity as (
+	    select
+	      m.user_id,
+	      coalesce(sum(a.chapters_delta), 0)::integer as week_chapters,
+	      coalesce(sum(a.chapters_delta) filter (where a.created_at::date = v_race_date), 0)::integer as today_chapters
+	    from public.family_room_members m
+	    left join public.family_weekly_activity a
+	      on a.room_id = m.room_id
+	     and a.user_id = m.user_id
+	     and a.week_start = v_week_start
     where m.room_id = v_room_id
       and m.active
     group by m.user_id
-  ),
-  leader as (
-    select user_id
-    from activity
-    order by today_chapters desc, user_id
-    limit 1
-  )
-  select
-    (select count(*)::integer from activity where today_chapters > 0),
-    (select coalesce(sum(today_chapters), 0)::integer from activity),
-    (select count(*)::integer from activity where today_chapters > 0 and user_id <> (select user_id from leader)),
-    (select user_id from leader)
-  into v_everyone_progress, v_family_today, v_comeback_progress, v_leader_id;
+	  ),
+	  leader as (
+	    select user_id
+	    from activity
+	    order by week_chapters desc, user_id
+	    limit 1
+	  ),
+	  lowest_reader as (
+	    select user_id, today_chapters
+	    from activity
+	    order by week_chapters asc, user_id
+	    limit 1
+	  )
+	  select
+	    (select count(*)::integer from activity where today_chapters > 0),
+	    (select coalesce(sum(today_chapters), 0)::integer from activity),
+	    (select count(*)::integer from activity where today_chapters > 0 and user_id <> (select user_id from leader)),
+	    (select user_id from leader),
+	    (select case when today_chapters > 0 then 1 else 0 end from lowest_reader),
+	    (select coalesce(max(today_chapters), 0)::integer from activity where user_id <> (select user_id from leader))
+	  into v_everyone_progress, v_family_today, v_comeback_progress, v_leader_id, v_lowest_progress, v_behind_max;
 
   for mission in
     select * from (
       values
-        ('everyone-read'::text, v_everyone_progress, greatest(1, v_member_count), 300),
-        ('family-ten'::text, v_family_today, 10, 500),
-        ('comeback-day'::text, v_comeback_progress, 2, 400)
-    ) as m(mission_key, progress_value, target_value, reward_honey)
+	        ('everyone-read'::text, v_everyone_progress, greatest(1, v_member_count), 300),
+	        ('beat-yesterday'::text, v_family_today, v_yesterday_target, 450),
+	        ('help-lowest'::text, v_lowest_progress, 1, 350),
+	        ('family-ten'::text, v_family_today, 10, 500),
+	        ('comeback-day'::text, v_comeback_progress, 2, 400),
+	        ('comeback-double'::text, v_behind_max, 2, 350),
+	        ('close-gap'::text, v_behind_max, 3, 450)
+	    ) as m(mission_key, progress_value, target_value, reward_honey)
   loop
     if mission.progress_value >= mission.target_value then
       insert into public.family_mission_claims(room_id, mission_date, mission_key, claimed_by, reward_honey)
@@ -1229,6 +1356,120 @@ begin
 end;
 $$;
 
+create or replace function public.settle_family_weekly_season()
+returns table(award_count integer)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_room_id uuid;
+  v_week_start date := public.current_family_week_start();
+  v_count integer := 0;
+begin
+  if auth.uid() is null then
+    raise exception 'not signed in';
+  end if;
+
+  v_room_id := public.current_family_room_id();
+  if v_room_id is null then
+    raise exception 'join a family room first';
+  end if;
+
+  with stats as (
+    select
+      m.user_id,
+      coalesce(p.display_name, 'Reader') as display_name,
+      coalesce(up.best_streak, 0) as best_streak,
+      coalesce(sum(a.chapters_delta), 0)::integer as week_chapters,
+      coalesce(sum(a.honey_delta), 0)::integer as week_honey,
+      coalesce(sum(a.honey_delta) filter (where a.event_type = 'comeback_bonus'), 0)::integer as comeback_honey
+    from public.family_room_members m
+    left join public.profiles p on p.id = m.user_id
+    left join public.user_progress up on up.user_id = m.user_id
+    left join public.family_weekly_activity a
+      on a.room_id = m.room_id
+     and a.user_id = m.user_id
+     and a.week_start = v_week_start
+    where m.room_id = v_room_id
+      and m.active
+    group by m.user_id, p.display_name, up.best_streak
+  ),
+  race_scores as (
+    select user_id, coalesce(sum(points_delta), 0)::integer as race_points
+    from public.family_race_events
+    where room_id = v_room_id
+      and race_date >= v_week_start
+      and race_date <= (v_week_start + 6)
+    group by user_id
+  ),
+  sunday_scores as (
+    select user_id, coalesce(sum(honey_delta), 0)::integer as sunday_honey
+    from public.family_weekly_activity
+    where room_id = v_room_id
+      and week_start = v_week_start
+      and event_type = 'sunday_strong'
+    group by user_id
+  ),
+  awards as (
+    select 'weekly-champion'::text as award_key, 'Weekly Champion'::text as title, user_id as winner_id, week_chapters as metric_value
+    from stats
+    order by week_chapters desc, week_honey desc, display_name asc
+    limit 1
+  ),
+  most_improved_award as (
+    select 'most-improved'::text as award_key, 'Most Improved'::text as title, s.user_id as winner_id, coalesce(r.race_points, 0)::integer as metric_value
+    from stats s
+    left join race_scores r on r.user_id = s.user_id
+    order by coalesce(r.race_points, 0) desc, s.week_chapters desc, s.display_name asc
+    limit 1
+  ),
+  best_streak_award as (
+    select 'best-streak'::text as award_key, 'Best Streak'::text as title, user_id as winner_id, best_streak as metric_value
+    from stats
+    order by best_streak desc, week_chapters desc, display_name asc
+    limit 1
+  ),
+  comeback_award as (
+    select 'biggest-comeback'::text as award_key, 'Biggest Comeback'::text as title, user_id as winner_id, comeback_honey as metric_value
+    from stats
+    order by comeback_honey desc, week_chapters desc, display_name asc
+    limit 1
+  ),
+  sunday_award as (
+    select 'sunday-finisher'::text as award_key, 'Sunday Finisher'::text as title, s.user_id as winner_id, coalesce(ss.sunday_honey, 0)::integer as metric_value
+    from stats s
+    left join sunday_scores ss on ss.user_id = s.user_id
+    order by coalesce(ss.sunday_honey, 0) desc, s.week_chapters desc, s.display_name asc
+    limit 1
+  ),
+  all_awards as (
+    select * from awards
+    union all select * from most_improved_award
+    union all select * from best_streak_award
+    union all select * from comeback_award
+    union all select * from sunday_award
+  )
+  insert into public.family_weekly_awards(room_id, week_start, award_key, winner_id, title, metric_value)
+  select v_room_id, v_week_start, award_key, winner_id, title, greatest(0, coalesce(metric_value, 0))
+  from all_awards
+  where winner_id is not null
+  on conflict (room_id, week_start, award_key)
+  do update set
+    winner_id = excluded.winner_id,
+    title = excluded.title,
+    metric_value = excluded.metric_value,
+    created_at = now();
+
+  select count(*)::integer into v_count
+  from public.family_weekly_awards
+  where room_id = v_room_id
+    and week_start = v_week_start;
+
+  return query select v_count;
+end;
+$$;
+
 create or replace function public.prevent_user_progress_regression()
 returns trigger
 language plpgsql
@@ -1275,3 +1516,4 @@ grant execute on function public.settle_family_goal(uuid) to authenticated;
 grant execute on function public.claim_family_missions() to authenticated;
 grant execute on function public.use_family_race_powerup(uuid, text) to authenticated;
 grant execute on function public.settle_family_daily_race() to authenticated;
+grant execute on function public.settle_family_weekly_season() to authenticated;
