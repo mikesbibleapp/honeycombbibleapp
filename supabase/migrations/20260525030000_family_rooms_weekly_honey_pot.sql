@@ -1249,7 +1249,7 @@ begin
     auth.uid(),
     v_powerup,
     v_delta,
-    case when v_powerup = 'turbo' then 'Turbo boost' else 'Honey slick setback' end
+    case when v_powerup = 'turbo' then 'Turbo boost' else 'Honey Trap setback' end
   );
 
   insert into public.family_weekly_activity(room_id, week_start, user_id, event_type, honey_delta, chapters_delta, note)
