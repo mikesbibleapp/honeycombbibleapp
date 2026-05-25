@@ -446,6 +446,8 @@ export const PREMIUM_TRAILS = Object.freeze([
 
 export const EXISTING_ADVENTURE_ASSETS = Object.freeze({
   map_background: `${ADVENTURE_ASSET_ROOT}/map-background.svg`,
+  bible_world_map_ai: `${ADVENTURE_ASSET_ROOT}/bible-world-map-ai.png`,
+  character_showcase_ai: `${ADVENTURE_ASSET_ROOT}/character-showcase-ai.png`,
   reward_chest: `${ADVENTURE_ASSET_ROOT}/reward-chest.svg`,
   temple_trophy: `${ADVENTURE_ASSET_ROOT}/temple-trophy.svg`,
 });
