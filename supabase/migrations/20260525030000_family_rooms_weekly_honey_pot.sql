@@ -71,11 +71,56 @@ create table if not exists public.family_goals (
 create index if not exists family_goals_room_status_idx
   on public.family_goals(room_id, status, deadline);
 
+create table if not exists public.family_daily_races (
+  room_id uuid not null references public.family_rooms(id) on delete cascade,
+  race_date date not null,
+  jackpot_honey integer not null default 2000 check (jackpot_honey >= 0),
+  status text not null default 'active' check (status in ('active', 'settled')),
+  winner_id uuid references auth.users(id) on delete set null,
+  settled_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (room_id, race_date)
+);
+
+create table if not exists public.family_race_events (
+  id uuid primary key default uuid_generate_v4(),
+  room_id uuid not null references public.family_rooms(id) on delete cascade,
+  race_date date not null,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  actor_id uuid references auth.users(id) on delete set null,
+  event_type text not null,
+  points_delta integer not null default 0,
+  source_key text,
+  note text,
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists family_race_events_source_key_idx
+  on public.family_race_events(room_id, user_id, source_key)
+  where source_key is not null;
+
+create index if not exists family_race_events_room_date_idx
+  on public.family_race_events(room_id, race_date, user_id);
+
+create table if not exists public.family_mission_claims (
+  room_id uuid not null references public.family_rooms(id) on delete cascade,
+  mission_date date not null,
+  mission_key text not null,
+  claimed_by uuid not null references auth.users(id) on delete cascade,
+  reward_honey integer not null default 0 check (reward_honey >= 0),
+  claimed_at timestamptz not null default now(),
+  primary key (room_id, mission_date, mission_key)
+);
+
 alter table public.family_rooms enable row level security;
 alter table public.family_room_members enable row level security;
 alter table public.family_weekly_pots enable row level security;
 alter table public.family_weekly_activity enable row level security;
 alter table public.family_goals enable row level security;
+alter table public.family_daily_races enable row level security;
+alter table public.family_race_events enable row level security;
+alter table public.family_mission_claims enable row level security;
 
 drop policy if exists family_rooms_read_member on public.family_rooms;
 create policy family_rooms_read_member on public.family_rooms
@@ -137,6 +182,42 @@ create policy family_goals_read_member on public.family_goals
     )
   );
 
+drop policy if exists family_daily_races_read_member on public.family_daily_races;
+create policy family_daily_races_read_member on public.family_daily_races
+  for select to authenticated
+  using (
+    exists (
+      select 1 from public.family_room_members mine
+      where mine.room_id = family_daily_races.room_id
+        and mine.user_id = auth.uid()
+        and mine.active
+    )
+  );
+
+drop policy if exists family_race_events_read_member on public.family_race_events;
+create policy family_race_events_read_member on public.family_race_events
+  for select to authenticated
+  using (
+    exists (
+      select 1 from public.family_room_members mine
+      where mine.room_id = family_race_events.room_id
+        and mine.user_id = auth.uid()
+        and mine.active
+    )
+  );
+
+drop policy if exists family_mission_claims_read_member on public.family_mission_claims;
+create policy family_mission_claims_read_member on public.family_mission_claims
+  for select to authenticated
+  using (
+    exists (
+      select 1 from public.family_room_members mine
+      where mine.room_id = family_mission_claims.room_id
+        and mine.user_id = auth.uid()
+        and mine.active
+    )
+  );
+
 create or replace function public.current_family_week_start()
 returns date
 language sql
@@ -160,6 +241,7 @@ as $$
   limit 1
 $$;
 
+drop function if exists public.my_family_room();
 create or replace function public.my_family_room()
 returns table (
   room_id uuid,
@@ -176,7 +258,14 @@ returns table (
   leader_name text,
   leader_chapters integer,
   members jsonb,
-  goals jsonb
+  goals jsonb,
+  race_date date,
+  daily_jackpot integer,
+  my_race_points integer,
+  race_leader_name text,
+  race_leader_points integer,
+  race_members jsonb,
+  missions jsonb
 )
 language plpgsql
 security definer
@@ -185,6 +274,7 @@ as $$
 declare
   v_room_id uuid;
   v_week_start date := public.current_family_week_start();
+  v_race_date date := current_date;
 begin
   v_room_id := public.current_family_room_id();
   if v_room_id is null then
@@ -194,6 +284,10 @@ begin
   insert into public.family_weekly_pots(room_id, week_start)
   values (v_room_id, v_week_start)
   on conflict on constraint family_weekly_pots_pkey do nothing;
+
+  insert into public.family_daily_races(room_id, race_date)
+  values (v_room_id, v_race_date)
+  on conflict on constraint family_daily_races_pkey do nothing;
 
   return query
   with member_stats as (
@@ -205,7 +299,8 @@ begin
       coalesce(up.best_streak, 0) as best_streak,
       coalesce(up.character_id, 'bee') as character_id,
       coalesce(sum(a.chapters_delta), 0)::integer as week_chapters,
-      coalesce(sum(a.honey_delta), 0)::integer as week_honey
+      coalesce(sum(a.honey_delta), 0)::integer as week_honey,
+      coalesce(sum(a.chapters_delta) filter (where a.created_at::date = v_race_date), 0)::integer as today_chapters
     from public.family_room_members m
     left join public.profiles p on p.id = m.user_id
     left join public.user_progress up on up.user_id = m.user_id
@@ -217,13 +312,32 @@ begin
       and m.active
     group by m.user_id, m.role, p.display_name, up.total_chapters, up.best_streak, up.character_id
   ),
-  ranked as (
+  race_stats as (
     select
       ms.*,
-      row_number() over (
-        order by ms.week_chapters desc, ms.week_honey desc, ms.total_chapters desc, ms.display_name asc
-      )::integer as family_rank
+      coalesce(sum(re.points_delta), 0)::integer as race_points
     from member_stats ms
+    left join public.family_race_events re
+      on re.room_id = v_room_id
+     and re.user_id = ms.user_id
+     and re.race_date = v_race_date
+    group by ms.user_id, ms.member_role, ms.display_name, ms.total_chapters, ms.best_streak, ms.character_id, ms.week_chapters, ms.week_honey, ms.today_chapters
+  ),
+  ranked as (
+    select
+      rs.*,
+      row_number() over (
+        order by rs.week_chapters desc, rs.week_honey desc, rs.total_chapters desc, rs.display_name asc
+      )::integer as family_rank
+    from race_stats rs
+  ),
+  race_ranked as (
+    select
+      rs.*,
+      row_number() over (
+        order by rs.race_points desc, rs.today_chapters desc, rs.week_chapters desc, rs.display_name asc
+      )::integer as race_rank
+    from race_stats rs
   ),
   goal_rows as (
     select
@@ -248,6 +362,41 @@ begin
       and g.status = 'active'
     order by g.created_at desc
     limit 10
+  ),
+  mission_rows as (
+    select *
+    from (
+      values
+        (
+          'everyone-read',
+          'Everyone reads today',
+          'Every family member reads at least one chapter today.',
+          (select count(*)::integer from race_stats where today_chapters > 0),
+          greatest(1, (select count(*)::integer from race_stats)),
+          300
+        ),
+        (
+          'family-ten',
+          '10 chapter family sprint',
+          'Read 10 total chapters as a family today.',
+          (select coalesce(sum(today_chapters), 0)::integer from race_stats),
+          10,
+          500
+        ),
+        (
+          'comeback-day',
+          'Comeback day',
+          'At least two readers behind the leader get on the board today.',
+          (
+            select count(*)::integer
+            from race_stats
+            where today_chapters > 0
+              and user_id <> (select user_id from ranked where family_rank = 1 limit 1)
+          ),
+          2,
+          400
+        )
+    ) as m(mission_key, title, body, progress_value, target_value, reward_honey)
   )
   select
     r.id,
@@ -289,6 +438,51 @@ begin
         from goal_rows
       ),
       '[]'::jsonb
+    ),
+    v_race_date,
+    coalesce(dr.jackpot_honey, 2000),
+    coalesce(my_race.race_points, 0),
+    coalesce(race_leader.display_name, 'Reader'),
+    coalesce(race_leader.race_points, 0),
+    coalesce(
+      (
+        select jsonb_agg(
+          jsonb_build_object(
+            'user_id', rr.user_id,
+            'display_name', rr.display_name,
+            'character_id', rr.character_id,
+            'today_chapters', rr.today_chapters,
+            'race_points', rr.race_points,
+            'race_rank', rr.race_rank
+          )
+          order by rr.race_rank
+        )
+        from race_ranked rr
+      ),
+      '[]'::jsonb
+    ),
+    coalesce(
+      (
+        select jsonb_agg(
+          jsonb_build_object(
+            'mission_key', mr.mission_key,
+            'title', mr.title,
+            'body', mr.body,
+            'progress', least(mr.progress_value, mr.target_value),
+            'target', mr.target_value,
+            'reward_honey', mr.reward_honey,
+            'complete', mr.progress_value >= mr.target_value,
+            'claimed', mc.mission_key is not null
+          )
+          order by mr.reward_honey desc
+        )
+        from mission_rows mr
+        left join public.family_mission_claims mc
+          on mc.room_id = v_room_id
+         and mc.mission_date = v_race_date
+         and mc.mission_key = mr.mission_key
+      ),
+      '[]'::jsonb
     )
   from public.family_rooms r
   join public.family_room_members mine
@@ -298,12 +492,18 @@ begin
   left join public.family_weekly_pots pot
     on pot.room_id = r.id
    and pot.week_start = v_week_start
+  left join public.family_daily_races dr
+    on dr.room_id = r.id
+   and dr.race_date = v_race_date
   left join ranked me on me.user_id = auth.uid()
   left join ranked leader on leader.family_rank = 1
+  left join race_ranked my_race on my_race.user_id = auth.uid()
+  left join race_ranked race_leader on race_leader.race_rank = 1
   where r.id = v_room_id;
 end;
 $$;
 
+drop function if exists public.create_family_room(text);
 create or replace function public.create_family_room(p_name text)
 returns table (
   room_id uuid,
@@ -320,7 +520,14 @@ returns table (
   leader_name text,
   leader_chapters integer,
   members jsonb,
-  goals jsonb
+  goals jsonb,
+  race_date date,
+  daily_jackpot integer,
+  my_race_points integer,
+  race_leader_name text,
+  race_leader_points integer,
+  race_members jsonb,
+  missions jsonb
 )
 language plpgsql
 security definer
@@ -355,10 +562,15 @@ begin
   values (v_room_id, public.current_family_week_start())
   on conflict on constraint family_weekly_pots_pkey do nothing;
 
+  insert into public.family_daily_races(room_id, race_date)
+  values (v_room_id, current_date)
+  on conflict on constraint family_daily_races_pkey do nothing;
+
   return query select * from public.my_family_room();
 end;
 $$;
 
+drop function if exists public.join_family_room(text);
 create or replace function public.join_family_room(p_code text)
 returns table (
   room_id uuid,
@@ -375,7 +587,14 @@ returns table (
   leader_name text,
   leader_chapters integer,
   members jsonb,
-  goals jsonb
+  goals jsonb,
+  race_date date,
+  daily_jackpot integer,
+  my_race_points integer,
+  race_leader_name text,
+  race_leader_points integer,
+  race_members jsonb,
+  missions jsonb
 )
 language plpgsql
 security definer
@@ -405,6 +624,10 @@ begin
   values (v_room_id, public.current_family_week_start())
   on conflict on constraint family_weekly_pots_pkey do nothing;
 
+  insert into public.family_daily_races(room_id, race_date)
+  values (v_room_id, current_date)
+  on conflict on constraint family_daily_races_pkey do nothing;
+
   return query select * from public.my_family_room();
 end;
 $$;
@@ -427,6 +650,7 @@ declare
   v_id uuid;
   v_honey integer := greatest(0, coalesce(p_honey_delta, 0));
   v_chapters integer := greatest(0, coalesce(p_chapters_delta, 0));
+  v_race_points integer := 0;
   v_pot integer := 0;
 begin
   if auth.uid() is null then
@@ -444,12 +668,38 @@ begin
   values (v_room_id, v_week_start)
   on conflict on constraint family_weekly_pots_pkey do nothing;
 
+  insert into public.family_daily_races(room_id, race_date)
+  values (v_room_id, current_date)
+  on conflict on constraint family_daily_races_pkey do nothing;
+
   insert into public.family_weekly_activity(room_id, week_start, user_id, event_type, honey_delta, chapters_delta, source_key, note)
   values (v_room_id, v_week_start, auth.uid(), left(coalesce(p_event_type, 'activity'), 50), v_honey, v_chapters, p_source_key, left(coalesce(p_note, ''), 180))
   on conflict (room_id, user_id, source_key) where source_key is not null do nothing
   returning id into v_id;
 
   if v_id is not null then
+    v_race_points := case
+      when coalesce(p_event_type, '') = 'chapter_read' then (v_chapters * 100) + least(50, v_honey)
+      when coalesce(p_event_type, '') = 'comeback_bonus' then 60
+      when coalesce(p_event_type, '') = 'sunday_strong' then 150
+      else 0
+    end;
+
+    if v_race_points <> 0 then
+      insert into public.family_race_events(room_id, race_date, user_id, actor_id, event_type, points_delta, source_key, note)
+      values (
+        v_room_id,
+        current_date,
+        auth.uid(),
+        auth.uid(),
+        left(coalesce(p_event_type, 'activity'), 50),
+        v_race_points,
+        case when p_source_key is null then null else 'race:' || p_source_key end,
+        left(coalesce(p_note, ''), 180)
+      )
+      on conflict (room_id, user_id, source_key) where source_key is not null do nothing;
+    end if;
+
     update public.family_weekly_pots fwp
     set pot_honey = fwp.pot_honey + v_honey,
         updated_at = now()
@@ -646,6 +896,339 @@ begin
 end;
 $$;
 
+create or replace function public.claim_family_missions()
+returns table(claimed_count integer, reward_honey integer, pot_honey integer)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_room_id uuid;
+  v_week_start date := public.current_family_week_start();
+  v_race_date date := current_date;
+  v_member_count integer := 0;
+  v_everyone_progress integer := 0;
+  v_family_today integer := 0;
+  v_comeback_progress integer := 0;
+  v_leader_id uuid;
+  v_claimed integer := 0;
+  v_reward integer := 0;
+  v_pot integer := 0;
+  mission record;
+begin
+  if auth.uid() is null then
+    raise exception 'not signed in';
+  end if;
+
+  v_room_id := public.current_family_room_id();
+  if v_room_id is null then
+    raise exception 'join a family room first';
+  end if;
+
+  insert into public.family_weekly_pots(room_id, week_start)
+  values (v_room_id, v_week_start)
+  on conflict on constraint family_weekly_pots_pkey do nothing;
+
+  select count(*)::integer into v_member_count
+  from public.family_room_members
+  where room_id = v_room_id
+    and active;
+
+  with activity as (
+    select m.user_id, coalesce(sum(a.chapters_delta) filter (where a.created_at::date = v_race_date), 0)::integer as today_chapters
+    from public.family_room_members m
+    left join public.family_weekly_activity a
+      on a.room_id = m.room_id
+     and a.user_id = m.user_id
+     and a.week_start = v_week_start
+    where m.room_id = v_room_id
+      and m.active
+    group by m.user_id
+  ),
+  leader as (
+    select user_id
+    from activity
+    order by today_chapters desc, user_id
+    limit 1
+  )
+  select
+    (select count(*)::integer from activity where today_chapters > 0),
+    (select coalesce(sum(today_chapters), 0)::integer from activity),
+    (select count(*)::integer from activity where today_chapters > 0 and user_id <> (select user_id from leader)),
+    (select user_id from leader)
+  into v_everyone_progress, v_family_today, v_comeback_progress, v_leader_id;
+
+  for mission in
+    select * from (
+      values
+        ('everyone-read'::text, v_everyone_progress, greatest(1, v_member_count), 300),
+        ('family-ten'::text, v_family_today, 10, 500),
+        ('comeback-day'::text, v_comeback_progress, 2, 400)
+    ) as m(mission_key, progress_value, target_value, reward_honey)
+  loop
+    if mission.progress_value >= mission.target_value then
+      insert into public.family_mission_claims(room_id, mission_date, mission_key, claimed_by, reward_honey)
+      values (v_room_id, v_race_date, mission.mission_key, auth.uid(), mission.reward_honey)
+      on conflict (room_id, mission_date, mission_key) do nothing;
+
+      if found then
+        v_claimed := v_claimed + 1;
+        v_reward := v_reward + mission.reward_honey;
+
+        insert into public.family_weekly_activity(room_id, week_start, user_id, event_type, honey_delta, chapters_delta, source_key, note)
+        values (
+          v_room_id,
+          v_week_start,
+          auth.uid(),
+          'mission_reward',
+          mission.reward_honey,
+          0,
+          'family-mission:' || v_race_date::text || ':' || mission.mission_key,
+          'Family mission completed'
+        )
+        on conflict (room_id, user_id, source_key) where source_key is not null do nothing;
+      end if;
+    end if;
+  end loop;
+
+  if v_reward > 0 then
+    update public.family_weekly_pots fwp
+    set pot_honey = fwp.pot_honey + v_reward,
+        updated_at = now()
+    where fwp.room_id = v_room_id
+      and fwp.week_start = v_week_start
+    returning fwp.pot_honey into v_pot;
+  else
+    select fwp.pot_honey into v_pot
+    from public.family_weekly_pots fwp
+    where fwp.room_id = v_room_id
+      and fwp.week_start = v_week_start;
+  end if;
+
+  return query select v_claimed, v_reward, coalesce(v_pot, 0);
+end;
+$$;
+
+create or replace function public.use_family_race_powerup(
+  p_target_id uuid default null,
+  p_powerup text default 'honey_slick'
+)
+returns table(remaining_honey integer, my_race_points integer, target_race_points integer)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_room_id uuid;
+  v_week_start date := public.current_family_week_start();
+  v_race_date date := current_date;
+  v_target_id uuid := coalesce(p_target_id, auth.uid());
+  v_powerup text := lower(coalesce(p_powerup, 'honey_slick'));
+  v_cost integer;
+  v_delta integer;
+  v_honey integer;
+  v_my_points integer := 0;
+  v_target_points integer := 0;
+begin
+  if auth.uid() is null then
+    raise exception 'not signed in';
+  end if;
+
+  v_room_id := public.current_family_room_id();
+  if v_room_id is null then
+    raise exception 'join a family room first';
+  end if;
+
+  if not exists (
+    select 1 from public.family_room_members
+    where room_id = v_room_id
+      and user_id = v_target_id
+      and active
+  ) then
+    raise exception 'target is not in your family room';
+  end if;
+
+  if v_powerup = 'turbo' then
+    v_target_id := auth.uid();
+    v_cost := 125;
+    v_delta := 180;
+  elsif v_powerup = 'honey_slick' then
+    if v_target_id = auth.uid() then
+      raise exception 'pick someone else to slow down';
+    end if;
+    v_cost := 75;
+    v_delta := -150;
+  else
+    raise exception 'unknown powerup';
+  end if;
+
+  select coalesce((state->>'honey')::integer, 0) into v_honey
+  from public.user_progress
+  where user_id = auth.uid()
+  for update;
+
+  if coalesce(v_honey, 0) < v_cost then
+    raise exception 'not enough honey for that powerup';
+  end if;
+
+  update public.user_progress
+  set state = jsonb_set(state, '{honey}', to_jsonb(v_honey - v_cost), true),
+      updated_at = now()
+  where user_id = auth.uid();
+
+  insert into public.family_weekly_pots(room_id, week_start)
+  values (v_room_id, v_week_start)
+  on conflict on constraint family_weekly_pots_pkey do nothing;
+
+  insert into public.family_daily_races(room_id, race_date)
+  values (v_room_id, v_race_date)
+  on conflict on constraint family_daily_races_pkey do nothing;
+
+  insert into public.family_race_events(room_id, race_date, user_id, actor_id, event_type, points_delta, note)
+  values (
+    v_room_id,
+    v_race_date,
+    v_target_id,
+    auth.uid(),
+    v_powerup,
+    v_delta,
+    case when v_powerup = 'turbo' then 'Turbo boost' else 'Honey slick setback' end
+  );
+
+  insert into public.family_weekly_activity(room_id, week_start, user_id, event_type, honey_delta, chapters_delta, note)
+  values (v_room_id, v_week_start, auth.uid(), 'powerup_spend', v_cost, 0, 'Race powerup fed the family pot');
+
+  update public.family_weekly_pots fwp
+  set pot_honey = fwp.pot_honey + v_cost,
+      updated_at = now()
+  where fwp.room_id = v_room_id
+    and fwp.week_start = v_week_start;
+
+  select coalesce(sum(points_delta), 0)::integer into v_my_points
+  from public.family_race_events
+  where room_id = v_room_id
+    and race_date = v_race_date
+    and user_id = auth.uid();
+
+  select coalesce(sum(points_delta), 0)::integer into v_target_points
+  from public.family_race_events
+  where room_id = v_room_id
+    and race_date = v_race_date
+    and user_id = v_target_id;
+
+  return query select v_honey - v_cost, v_my_points, v_target_points;
+end;
+$$;
+
+create or replace function public.settle_family_daily_race()
+returns table(winner_id uuid, winner_name text, payout_honey integer, winning_points integer)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_room_id uuid;
+  v_week_start date := public.current_family_week_start();
+  v_race_date date := current_date;
+  v_race public.family_daily_races%rowtype;
+  v_winner_honey integer := 0;
+  v_winner_name text := 'Reader';
+  v_points integer := 0;
+begin
+  if auth.uid() is null then
+    raise exception 'not signed in';
+  end if;
+
+  v_room_id := public.current_family_room_id();
+  if v_room_id is null then
+    raise exception 'join a family room first';
+  end if;
+
+  insert into public.family_daily_races(room_id, race_date)
+  values (v_room_id, v_race_date)
+  on conflict on constraint family_daily_races_pkey do nothing;
+
+  select * into v_race
+  from public.family_daily_races
+  where room_id = v_room_id
+    and race_date = v_race_date
+  for update;
+
+  if v_race.status = 'settled' then
+    select coalesce(p.display_name, 'Reader'), coalesce(sum(re.points_delta), 0)::integer
+      into v_winner_name, v_points
+    from public.profiles p
+    left join public.family_race_events re
+      on re.user_id = p.id
+     and re.room_id = v_room_id
+     and re.race_date = v_race_date
+    where p.id = v_race.winner_id
+    group by p.display_name;
+
+    return query select v_race.winner_id, v_winner_name, v_race.jackpot_honey, coalesce(v_points, 0);
+    return;
+  end if;
+
+  with scores as (
+    select
+      m.user_id,
+      coalesce(p.display_name, 'Reader') as display_name,
+      coalesce(sum(re.points_delta), 0)::integer as race_points
+    from public.family_room_members m
+    left join public.profiles p on p.id = m.user_id
+    left join public.family_race_events re
+      on re.room_id = m.room_id
+     and re.user_id = m.user_id
+     and re.race_date = v_race_date
+    where m.room_id = v_room_id
+      and m.active
+    group by m.user_id, p.display_name
+    order by race_points desc, display_name asc
+    limit 1
+  )
+  select user_id, display_name, race_points
+    into v_race.winner_id, v_winner_name, v_points
+  from scores;
+
+  if v_race.winner_id is null or coalesce(v_points, 0) <= 0 then
+    raise exception 'no race points yet today';
+  end if;
+
+  select coalesce((state->>'honey')::integer, 0) into v_winner_honey
+  from public.user_progress
+  where user_id = v_race.winner_id
+  for update;
+
+  update public.user_progress
+  set state = jsonb_set(state, '{honey}', to_jsonb(coalesce(v_winner_honey, 0) + v_race.jackpot_honey), true),
+      updated_at = now()
+  where user_id = v_race.winner_id;
+
+  update public.family_daily_races
+  set status = 'settled',
+      winner_id = v_race.winner_id,
+      settled_at = now(),
+      updated_at = now()
+  where room_id = v_room_id
+    and race_date = v_race_date;
+
+  insert into public.family_weekly_activity(room_id, week_start, user_id, event_type, honey_delta, chapters_delta, source_key, note)
+  values (
+    v_room_id,
+    v_week_start,
+    v_race.winner_id,
+    'daily_race_win',
+    v_race.jackpot_honey,
+    0,
+    'daily-race-win:' || v_race_date::text,
+    'Daily family race jackpot'
+  )
+  on conflict (room_id, user_id, source_key) where source_key is not null do nothing;
+
+  return query select v_race.winner_id, v_winner_name, v_race.jackpot_honey, coalesce(v_points, 0);
+end;
+$$;
+
 create or replace function public.prevent_user_progress_regression()
 returns trigger
 language plpgsql
@@ -689,3 +1272,6 @@ grant execute on function public.join_family_room(text) to authenticated;
 grant execute on function public.record_family_activity(text, integer, integer, text, text) to authenticated;
 grant execute on function public.create_family_goal(uuid, integer, integer, date, text) to authenticated;
 grant execute on function public.settle_family_goal(uuid) to authenticated;
+grant execute on function public.claim_family_missions() to authenticated;
+grant execute on function public.use_family_race_powerup(uuid, text) to authenticated;
+grant execute on function public.settle_family_daily_race() to authenticated;
