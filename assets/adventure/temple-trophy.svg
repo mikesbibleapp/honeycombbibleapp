@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Temple trophy">
+  <defs>
+    <linearGradient id="stone" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset=".55" stop-color="#dff3ff"/>
+      <stop offset="1" stop-color="#8fd1ff"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#fff36c"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="128" cy="222" rx="88" ry="14" fill="#281b56" opacity=".2"/>
+  <path d="M42 88 L128 36 L214 88 Z" fill="url(#gold)" stroke="#221955" stroke-width="10" stroke-linejoin="round"/>
+  <rect x="56" y="88" width="144" height="24" rx="8" fill="url(#stone)" stroke="#221955" stroke-width="8"/>
+  <g fill="url(#stone)" stroke="#221955" stroke-width="8">
+    <rect x="68" y="112" width="24" height="82" rx="8"/>
+    <rect x="116" y="112" width="24" height="82" rx="8"/>
+    <rect x="164" y="112" width="24" height="82" rx="8"/>
+  </g>
+  <rect x="44" y="194" width="168" height="28" rx="10" fill="url(#gold)" stroke="#221955" stroke-width="8"/>
+  <circle cx="128" cy="82" r="17" fill="#fff8af" stroke="#221955" stroke-width="7"/>
+</svg>

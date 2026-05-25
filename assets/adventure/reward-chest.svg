@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Honey reward chest">
+  <defs>
+    <linearGradient id="gold" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#fff169"/>
+      <stop offset=".52" stop-color="#ffbd2e"/>
+      <stop offset="1" stop-color="#ea7b22"/>
+    </linearGradient>
+    <linearGradient id="wood" x1="0" x2="1">
+      <stop offset="0" stop-color="#9a4b25"/>
+      <stop offset="1" stop-color="#e78332"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="128" cy="220" rx="86" ry="16" fill="#311d59" opacity=".18"/>
+  <path d="M48 92 C52 48 84 30 128 30 C172 30 204 48 208 92 Z" fill="url(#gold)" stroke="#281b56" stroke-width="10"/>
+  <rect x="38" y="88" width="180" height="116" rx="22" fill="url(#wood)" stroke="#281b56" stroke-width="10"/>
+  <path d="M38 122 H218" stroke="#281b56" stroke-width="10"/>
+  <path d="M84 36 C70 76 78 106 100 122" fill="none" stroke="#fff8b7" stroke-width="12" opacity=".5"/>
+  <rect x="104" y="108" width="48" height="52" rx="10" fill="url(#gold)" stroke="#281b56" stroke-width="8"/>
+  <circle cx="128" cy="132" r="9" fill="#fff8b7" stroke="#281b56" stroke-width="5"/>
+  <g fill="#fff36f" stroke="#281b56" stroke-width="5">
+    <circle cx="56" cy="70" r="14"/>
+    <circle cx="210" cy="60" r="10"/>
+    <circle cx="186" cy="30" r="8"/>
+  </g>
+</svg>
