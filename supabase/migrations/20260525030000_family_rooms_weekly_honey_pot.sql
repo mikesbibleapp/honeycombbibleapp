@@ -193,13 +193,13 @@ begin
 
   insert into public.family_weekly_pots(room_id, week_start)
   values (v_room_id, v_week_start)
-  on conflict (room_id, week_start) do nothing;
+  on conflict on constraint family_weekly_pots_pkey do nothing;
 
   return query
   with member_stats as (
     select
       m.user_id,
-      m.role,
+      m.role as member_role,
       coalesce(p.display_name, 'Reader') as display_name,
       coalesce(up.total_chapters, 0) as total_chapters,
       coalesce(up.best_streak, 0) as best_streak,
@@ -267,19 +267,19 @@ begin
       (
         select jsonb_agg(
           jsonb_build_object(
-            'user_id', user_id,
-            'display_name', display_name,
-            'role', role,
-            'character_id', character_id,
-            'week_chapters', week_chapters,
-            'week_honey', week_honey,
-            'total_chapters', total_chapters,
-            'best_streak', best_streak,
-            'rank', family_rank
+            'user_id', rk.user_id,
+            'display_name', rk.display_name,
+            'role', rk.member_role,
+            'character_id', rk.character_id,
+            'week_chapters', rk.week_chapters,
+            'week_honey', rk.week_honey,
+            'total_chapters', rk.total_chapters,
+            'best_streak', rk.best_streak,
+            'rank', rk.family_rank
           )
-          order by family_rank
+          order by rk.family_rank
         )
-        from ranked
+        from ranked rk
       ),
       '[]'::jsonb
     ),
@@ -353,7 +353,7 @@ begin
 
   insert into public.family_weekly_pots(room_id, week_start)
   values (v_room_id, public.current_family_week_start())
-  on conflict (room_id, week_start) do nothing;
+  on conflict on constraint family_weekly_pots_pkey do nothing;
 
   return query select * from public.my_family_room();
 end;
@@ -398,12 +398,12 @@ begin
 
   insert into public.family_room_members(room_id, user_id, role, active)
   values (v_room_id, auth.uid(), 'member', true)
-  on conflict (room_id, user_id)
+  on conflict on constraint family_room_members_pkey
   do update set active = true;
 
   insert into public.family_weekly_pots(room_id, week_start)
   values (v_room_id, public.current_family_week_start())
-  on conflict (room_id, week_start) do nothing;
+  on conflict on constraint family_weekly_pots_pkey do nothing;
 
   return query select * from public.my_family_room();
 end;
