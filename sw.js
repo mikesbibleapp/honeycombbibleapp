@@ -2,7 +2,7 @@
 // Network-first for the HTML so the home-screen PWA always picks up the
 // latest deploy on launch, with a cached copy as the offline fallback.
 
-const CACHE = "abide-v3-tz-and-chal";
+const CACHE = "abide-v4-cup-games-cosmetics";
 
 self.addEventListener("install", (e) => {
   self.skipWaiting();
