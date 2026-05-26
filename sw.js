@@ -2,7 +2,7 @@
 // Network-first for the HTML so the home-screen PWA always picks up the
 // latest deploy on launch, with a cached copy as the offline fallback.
 
-const CACHE = "abide-v12-rewards-safeblocks";
+const CACHE = "abide-v13-bonuses-and-nudges";
 
 self.addEventListener("install", (e) => {
   self.skipWaiting();
