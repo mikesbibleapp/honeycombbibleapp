@@ -74,14 +74,22 @@ self.addEventListener("fetch", (e) => {
     url.pathname.endsWith("/") ||
     url.pathname.endsWith(".html");
 
+  const isCacheableUrl = url.protocol === "http:" || url.protocol === "https:";
+
   if (isHTML) {
     // Network-first: always try fresh, fall back to cache when offline.
     e.respondWith(
       (async () => {
         try {
           const fresh = await fetch(req, { cache: "no-store" });
-          const cache = await caches.open(CACHE);
-          cache.put(req, fresh.clone());
+          if (isCacheableUrl && fresh && fresh.ok) {
+            try {
+              const cache = await caches.open(CACHE);
+              await cache.put(req, fresh.clone());
+            } catch {
+              /* cache.put can throw on opaque/partial responses — ignore. */
+            }
+          }
           return fresh;
         } catch {
           const cached = await caches.match(req);
@@ -104,16 +112,28 @@ self.addEventListener("fetch", (e) => {
       const cached = await caches.match(req);
       if (cached) {
         fetch(req)
-          .then((fresh) =>
-            caches.open(CACHE).then((c) => c.put(req, fresh.clone())),
-          )
+          .then(async (fresh) => {
+            if (!isCacheableUrl || !fresh || !fresh.ok) return;
+            try {
+              const c = await caches.open(CACHE);
+              await c.put(req, fresh.clone());
+            } catch {
+              /* swallow */
+            }
+          })
           .catch(() => {});
         return cached;
       }
       try {
         const fresh = await fetch(req);
-        const cache = await caches.open(CACHE);
-        cache.put(req, fresh.clone());
+        if (isCacheableUrl && fresh && fresh.ok) {
+          try {
+            const cache = await caches.open(CACHE);
+            await cache.put(req, fresh.clone());
+          } catch {
+            /* swallow */
+          }
+        }
         return fresh;
       } catch {
         return new Response("Offline", { status: 503 });

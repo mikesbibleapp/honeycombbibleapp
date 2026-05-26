@@ -132,7 +132,11 @@ export const ADVENTURE_WORLD_REGIONS = Object.freeze([
     ],
     palette: ["#a64f3c", "#e2a84c", "#476e7c", "#d8d5c5"],
     landmarks: ["Roman roads", "harbor docks", "house church rooms"],
-    ambientAssetKeys: ["scroll_light_trail", "merchant_cart", "harbor_lanterns"],
+    ambientAssetKeys: [
+      "scroll_light_trail",
+      "merchant_cart",
+      "harbor_lanterns",
+    ],
   },
 ]);
 
@@ -202,7 +206,14 @@ export const PREMIUM_CHARACTER_ARCHETYPES = Object.freeze([
     displayName: "Paul",
     role: "missionary teacher",
     homeRegionId: "church",
-    storyArcBooks: ["Acts", "Romans", "1 Corinthians", "Galatians", "Ephesians", "Philippians"],
+    storyArcBooks: [
+      "Acts",
+      "Romans",
+      "1 Corinthians",
+      "Galatians",
+      "Ephesians",
+      "Philippians",
+    ],
     defaultOutfitId: "roman_travel_cloak",
     outfitIds: ["roman_travel_cloak", "scribe_robes", "tentmaker_apron"],
     mountOrVehicleIds: ["merchant_cart", "fishing_boat"],
@@ -475,16 +486,34 @@ export const PREMIUM_ASSET_PLAN = Object.freeze({
   })),
 });
 
-export function getAdventureRegionForBook(bookName) {
-  return ADVENTURE_WORLD_REGIONS.find((region) => region.books.includes(bookName)) || null;
+export function getAdventureRegionForBook(bookName, chapter) {
+  // Genesis spans two regions: Creation (chapters 1-11) and Patriarchs (12-50).
+  // When a chapter is provided we can disambiguate; otherwise fall back to the
+  // first matching region for backward compatibility.
+  if (bookName === "Genesis" && typeof chapter === "number" && chapter >= 12) {
+    return (
+      ADVENTURE_WORLD_REGIONS.find((region) => region.id === "patriarchs") ||
+      null
+    );
+  }
+  return (
+    ADVENTURE_WORLD_REGIONS.find((region) => region.books.includes(bookName)) ||
+    null
+  );
 }
 
 export function getPremiumCharacter(characterId) {
-  return PREMIUM_CHARACTER_ARCHETYPES.find((character) => character.id === characterId) || null;
+  return (
+    PREMIUM_CHARACTER_ARCHETYPES.find(
+      (character) => character.id === characterId,
+    ) || null
+  );
 }
 
 export function listPremiumCharactersByRegion(regionId) {
-  return PREMIUM_CHARACTER_ARCHETYPES.filter((character) => character.homeRegionId === regionId);
+  return PREMIUM_CHARACTER_ARCHETYPES.filter(
+    (character) => character.homeRegionId === regionId,
+  );
 }
 
 export function listPremiumOutfitOptions(characterId) {
@@ -503,7 +532,9 @@ export function buildPremiumCharacterLoadout(characterId, options = {}) {
   const outfitId = character.outfitIds.includes(options.outfitId)
     ? options.outfitId
     : character.defaultOutfitId;
-  const mountOrVehicleId = character.mountOrVehicleIds.includes(options.mountOrVehicleId)
+  const mountOrVehicleId = character.mountOrVehicleIds.includes(
+    options.mountOrVehicleId,
+  )
     ? options.mountOrVehicleId
     : character.mountOrVehicleIds[0];
   const trailId = character.trailIds.includes(options.trailId)
@@ -512,10 +543,15 @@ export function buildPremiumCharacterLoadout(characterId, options = {}) {
 
   return {
     character,
-    region: ADVENTURE_WORLD_REGIONS.find((region) => region.id === character.homeRegionId) || null,
+    region:
+      ADVENTURE_WORLD_REGIONS.find(
+        (region) => region.id === character.homeRegionId,
+      ) || null,
     outfit: PREMIUM_OUTFITS.find((outfit) => outfit.id === outfitId) || null,
     mountOrVehicle:
-      PREMIUM_MOUNTS_AND_VEHICLES.find((item) => item.id === mountOrVehicleId) || null,
+      PREMIUM_MOUNTS_AND_VEHICLES.find(
+        (item) => item.id === mountOrVehicleId,
+      ) || null,
     trail: PREMIUM_TRAILS.find((trail) => trail.id === trailId) || null,
   };
 }
