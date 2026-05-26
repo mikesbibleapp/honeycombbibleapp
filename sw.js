@@ -2,7 +2,7 @@
 // Network-first for the HTML so the home-screen PWA always picks up the
 // latest deploy on launch, with a cached copy as the offline fallback.
 
-const CACHE = "abide-v9-challenges-picker-whatsnew";
+const CACHE = "abide-v10-cup-tab-direct";
 
 self.addEventListener("install", (e) => {
   self.skipWaiting();
