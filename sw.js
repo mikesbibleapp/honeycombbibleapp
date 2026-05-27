@@ -2,7 +2,7 @@
 // Network-first for the HTML so the home-screen PWA always picks up the
 // latest deploy on launch, with a cached copy as the offline fallback.
 
-const CACHE = "abide-v13-bonuses-and-nudges";
+const CACHE = "abide-v14-family-cup-alerts";
 
 self.addEventListener("install", (e) => {
   self.skipWaiting();
@@ -20,44 +20,51 @@ self.addEventListener("activate", (e) => {
   );
 });
 
-// Push event — show notification when the streak reminder fires.
+// Push event — show notification for streak reminders and Family Cup alerts.
 self.addEventListener("push", (event) => {
   let data = {};
   try {
     data = event.data ? event.data.json() : {};
   } catch {
-    data = { title: "Abide", body: event.data ? event.data.text() : "" };
+    data = { title: "Honeycomb", body: event.data ? event.data.text() : "" };
   }
   const title = data.title || "Your streak needs you";
-  const body = data.body || "Open Abide and read one chapter.";
+  const body = data.body || "Open Honeycomb and read one chapter.";
   event.waitUntil(
     self.registration.showNotification(title, {
       body,
       icon: "/honeycombbibleapp/icon-192.png",
       badge: "/honeycombbibleapp/icon-192.png",
-      tag: "streak-reminder",
+      tag: data.tag || "honeycomb-alert",
       renotify: true,
       data,
     }),
   );
 });
 
-// Open the app when a notification is tapped (lands on the home screen).
+// Open the app when a notification is tapped.
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   event.waitUntil(
     (async () => {
+      const targetUrl = new URL(
+        event.notification.data && event.notification.data.url
+          ? event.notification.data.url
+          : "/honeycombbibleapp/?view=cup",
+        self.location.origin,
+      ).href;
       const allClients = await self.clients.matchAll({
         type: "window",
         includeUncontrolled: true,
       });
       for (const client of allClients) {
-        if (client.url.includes("mikesbibleapp") && "focus" in client) {
+        if (new URL(client.url).origin === new URL(targetUrl).origin && "focus" in client) {
+          if ("navigate" in client) await client.navigate(targetUrl);
           return client.focus();
         }
       }
       if (self.clients.openWindow) {
-        return self.clients.openWindow("/honeycombbibleapp/");
+        return self.clients.openWindow(targetUrl);
       }
     })(),
   );
