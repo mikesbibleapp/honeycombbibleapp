@@ -19,7 +19,11 @@ const VAPID_SUBJECT =
 const CRON_SECRET = Deno.env.get("CRON_SECRET") || "";
 
 const GAME_NAMES: Record<string, string> = {
-  bible_memory: "Bible Memory",
+  honey_drop: "Honey Drop",
+  manna_mover: "Manna Mover",
+  shepherd_dash: "Shepherd Dash",
+  ark_match: "Ark Match",
+  bible_memory: "Honey Memory",
   finish_verse: "Finish the Verse",
   match_book: "Match the Book",
   who_said: "Who Said It?",
@@ -217,7 +221,7 @@ async function pushDailyGame(
   const payload = JSON.stringify({
     title,
     body,
-    url: "https://mikesbibleapp.github.io/honeycombbibleapp/?view=cup&game=1",
+    url: "https://mikesbibleapp.github.io/honeycombbibleapp/?view=today&game=1",
     tag: `honeycomb-daily-game-${gameDate}`,
     type: "daily-game",
   });
