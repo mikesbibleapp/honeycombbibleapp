@@ -2,7 +2,7 @@
 // Network-first for the HTML so the home-screen PWA always picks up the
 // latest deploy on launch, with a cached copy as the offline fallback.
 
-const CACHE = "abide-v15-daily-surprises";
+const CACHE = "abide-v16-daily-game";
 
 self.addEventListener("install", (e) => {
   self.skipWaiting();
@@ -51,6 +51,8 @@ self.addEventListener("notificationclick", (event) => {
       const fallback =
         data.type && String(data.type).startsWith("daily-surprise")
           ? "/honeycombbibleapp/?view=cup&surprise=1"
+          : data.type === "daily-game"
+            ? "/honeycombbibleapp/?view=cup&game=1"
           : "/honeycombbibleapp/?view=cup";
       const targetUrl = new URL(
         data.url ? data.url : fallback,

@@ -117,6 +117,7 @@ function extractOutputText(response: Record<string, unknown>) {
 
 async function generateWithOpenAI() {
   if (!OPENAI_API_KEY) return null;
+  const encouragementDate = centralDateString();
 
   const res = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -135,7 +136,7 @@ async function generateWithOpenAI() {
         {
           role: "user",
           content:
-            "Create today's Honeycomb encouragement. It should help kids and adults delight in God's Word like Psalm 119. Keep reflection to 2-5 short sentences. Avoid cheesy motivational quotes, guilt, and complicated theology words.",
+            `Create the Honeycomb encouragement for ${encouragementDate}. It should help kids and adults delight in God's Word like Psalm 119. Keep reflection to 2-5 short sentences. Avoid cheesy motivational quotes, guilt, and complicated theology words. Make it feel fresh for this date.`,
         },
       ],
       text: {
@@ -227,7 +228,11 @@ Deno.serve(async (req) => {
       .eq("encouragement_date", encouragementDate)
       .maybeSingle();
     if (cacheError) return json(500, { error: "cache lookup failed" });
-    if (cached && validatePayload(cached.payload)) {
+    if (
+      cached &&
+      cached.source !== "fallback" &&
+      validatePayload(cached.payload)
+    ) {
       return json(200, cached as Record<string, unknown>);
     }
   }
